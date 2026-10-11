@@ -25,8 +25,9 @@ def test_pool_construction_imports_no_modules_lazily():
     # hosts that run `pydantic_monty` under an import-restricted environment
     # (e.g. Temporal's workflow sandbox) fail any module first imported after
     # the initial load — pool construction must not trigger a `pydantic_monty.*`
-    # import, which is why `_binary` loads eagerly at package import. A fresh
-    # interpreter is required since pytest has already imported the module.
+    # import, which is why `_monty`'s init imports `_binary` and caches the
+    # resolver. A fresh interpreter is required since pytest has already
+    # imported the module.
     code = """\
 import sys
 

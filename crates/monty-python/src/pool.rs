@@ -54,6 +54,7 @@ use pyo3::{
     Borrowed,
     exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
     prelude::*,
+    sync::PyOnceLock,
     types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
 };
 use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
@@ -1085,9 +1086,27 @@ async fn refresh_session_id(checkout: &SharedCheckout, cache: &Mutex<Option<Vec<
 // Shared argument parsing
 // =============================================================================
 
+/// Returns `pydantic_monty._binary.find_monty_binary`, importing it on first use.
+///
+/// Module init calls this eagerly so that hosts which forbid imports after the
+/// initial load (e.g. Temporal's workflow sandbox) never see an import, or even
+/// an `__import__` call, when a pool is first constructed. It runs while
+/// `pydantic_monty/__init__.py` is still executing, so `_binary` must stay a
+/// leaf module that imports nothing from `pydantic_monty`.
+pub(crate) fn binary_finder(py: Python<'_>) -> PyResult<&Py<PyAny>> {
+    static FINDER: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    FINDER.get_or_try_init(py, || {
+        // resolution lives in Python (env var, installed cli wheel, PATH)
+        py.import("pydantic_monty._binary")?
+            .getattr("find_monty_binary")
+            .map(Bound::unbind)
+    })
+}
+
 /// Builds the subprocess-transport `monty-pool` config from the (shared)
 /// `Monty`/`AsyncMonty` constructor arguments, resolving the binary via
-/// `pydantic_monty._binary` when not given explicitly.
+/// [`binary_finder`] when not given explicitly.
 #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
 fn parse_pool_config(
     py: Python<'_>,
@@ -1101,11 +1120,7 @@ fn parse_pool_config(
 ) -> PyResult<PoolConfig> {
     let binary_path = match binary_path {
         Some(path) => path,
-        // resolution lives in Python (env var, installed cli wheel, PATH)
-        None => py
-            .import("pydantic_monty._binary")?
-            .call_method0("find_monty_binary")?
-            .extract()?,
+        None => binary_finder(py)?.call0(py)?.extract(py)?,
     };
     let mut config = PoolConfig::subprocess(binary_path);
     config.min_processes = min_processes;
